@@ -31,7 +31,21 @@
       define: customElements.define.bind(customElements),
     },
     Element: {
+      after: Element.prototype.after,
+      append: Element.prototype.append,
+      before: Element.prototype.before,
+      childElementCount: propgetset(Element.prototype, "childElementCount"),
       children: propgetset(Element.prototype, "children"),
+      firstElementChild: propgetset(Element.prototype, "firstElementChild"),
+      insertAdjacentElement: Element.prototype.insertAdjacentElement,
+      insertAdjacentHTML: Element.prototype.insertAdjacentHTML,
+      insertAdjacentText: Element.prototype.insertAdjacentText,
+      lastElementChild: propgetset(Element.prototype, "lastElementChild"),
+      nextElementSibling: propgetset(Element.prototype, "nextElementSibling"),
+      prepend: Element.prototype.prepend,
+      previousElementSibling: propgetset(Element.prototype, "previousElementSibling"),
+      querySelector: Element.prototype.querySelector,
+      querySelectorAll: Element.prototype.querySelectorAll,
       remove: Element.prototype.remove,
     },
     HTMLStyleElement: {
@@ -88,6 +102,15 @@
       return root;
     }
 
+    isContainedIn(node, inside) {
+      while (node.parentNode) {
+        node = node.parentNode;
+        if (node == inside)
+          return true;
+      }
+      return false;
+    }
+
     getNodeSibling(node, direction) {
       const diff = direction>0 ? 1 : -1;
       const method = direction>0 ? Native.Node.nextSibling.get : Native.Node.previousSibling.get;
@@ -117,6 +140,12 @@
         }
       }
       return sibling;
+    }
+
+    maybeTextNode(item) {
+      if (item instanceof Node)
+        return item;
+      return document.createTextNode("" + item);
     }
   }
 
@@ -235,6 +264,131 @@
       return null;
     }
   }
+
+  class ElementAccessMixin {
+    // some of those don't exist on vanilla ShadowRoot (DocumentFragment)
+    // instead of having another mixin, they just throw.
+
+    after(...nodes) {
+      const parent = this.parentNode;
+      if (!parent)
+        throw new DOMException("Node has no parent", "HierarchyRequestError");
+      const ref = this.nextSibling;
+      for (const node of nodes) {
+        parent.insertBefore(NodeQ.maybeTextNode(node), ref);
+      }
+    }
+    append(...nodes) {
+      for (const node of nodes) {
+        this.insertBefore(NodeQ.maybeTextNode(node), null);
+      }
+    }
+    before(...nodes) {
+      const parent = this.parentNode;
+      if (!parent)
+        throw new DOMException("Node has no parent", "HierarchyRequestError");
+      for (const node of nodes) {
+        parent.insertBefore(NodeQ.maybeTextNode(node), this);
+      }
+    }
+    get childElementCount() {
+      return this.children.length;
+    }
+    get children() {
+      return this.childNodes.filter(n => n instanceof Element);
+    }
+    get firstElementChild() {
+      let child = this.firstChild;
+      while(child && !(child instanceof Element))
+        child = child.nextSibling;
+      return child;
+    }
+    insertAdjacentElement(where, element) {
+      if (!(element instanceof Element) &&
+          !(element instanceof DocumentFragment) &&
+          !(element instanceof Text))
+        throw new DOMException("Argument 2 of Element.insertAdjacentElement does not implement interface Element.", "TypeError");
+
+      const parent = this.parentNode;
+      const outsideAllowed = parent && (parent !== this.ownerDocument);
+      switch(where) {
+        case "beforebegin": {
+          if (!outsideAllowed)
+            throw new DOMException("No valid parent", "NoModificationAllowedError");
+          parent.insertBefore(element, this);
+          break;
+        }
+        case "afterbegin": {
+          this.insertBefore(element, this.firstChild);
+          break;
+        }
+        case "beforeend": {
+          this.insertBefore(element, null);
+          break;
+        }
+        case "afterend": {
+          if (!outsideAllowed)
+            throw new DOMException("No valid parent", "NoModificationAllowedError");
+          parent.insertBefore(element, this.nextSibling);
+          break;
+        }
+        default:
+          throw new DOMException("Invalid node location", "SyntaxError");
+      }
+    }
+    insertAdjacentHTML(where, data) {
+      const df = document.createElement("template");
+      df.innerHTML = data;
+      this.insertAdjacentElement(where, df.content);
+    }
+    insertAdjacentText(where, text) {
+      this.insertAdjacentElement(where, document.createTextNode(""+text));
+    }
+    get lastElementChild() {
+      let child = this.lastChild;
+      while(child && !(child instanceof Element))
+        child = child.previousSibling;
+      return child;
+    }
+    get nextElementSibling() {
+      if (!this.parentNode)
+        throw new DOMException("Node has no parent", "HierarchyRequestError");
+      let sibling = this.nextSibling;
+      while(sibling && !(sibling instanceof Element))
+        sibling = sibling.nextSibling;
+      return sibling;
+    }
+    prepend(...nodes) {
+      const ref = this.firstChild;
+      for (const node of nodes) {
+        this.insertBefore(NodeQ.maybeTextNode(node), ref);
+      }
+    }
+    get previousElementSibling() {
+      if (!this.parentNode)
+        throw new DOMException("Node has no parent", "HierarchyRequestError");
+      let sibling = this.previousSibling;
+      while(sibling && !(sibling instanceof Element))
+        sibling = sibling.previousSibling;
+      return sibling;
+    }
+    querySelector(selector) {
+    }
+    querySelectorAll(selector) {
+    }
+    remove() {
+      const parent = this.parentNode;
+      if (parent)
+        parent.removeChild(this);
+    }
+  }
+
+  const HTMLElementAccesMixin = {
+    // Special casing for Polymer customElements
+    insertAdjacentElement: ElementAccessMixin.prototype.insertAdjacentElement,
+    insertAdjacentHTML: ElementAccessMixin.prototype.insertAdjacentHTML,
+  };
+
 
   class HTMLSlotElement extends HTMLElement {
     constructor() {
@@ -403,7 +557,7 @@
         if (idx < 0)
           throw new DOMException("Node was not found", "NotFoundError");
         const insert = child instanceof DocumentFragment ? [... child.childNodes] : [child];
-        Array.splice.apply(this.dtVirtualChildNodes, [idx, 0, ...insert]);
+        Array.prototype.splice.apply(this.dtVirtualChildNodes, [idx, 0, ...insert]);
         Property.assignReadOnly(child, "dtVirtualParent", this);
         if (this.dtShadowRoot) {
           // either slot it or set it aside
@@ -641,6 +795,9 @@
 
   function installPatches() {
     Property.mixin(customElements, CERegistryMixin.prototype);
+    Property.mixin(Element.prototype, ElementAccessMixin.prototype);
+    Property.mixin(HTMLElement.prototype, HTMLElementAccesMixin);
+    Property.mixin(ShadowRoot.prototype, ElementAccessMixin.prototype);
     Property.mixin(Element.prototype, ElementMixin.prototype);
     Property.mixin(HTMLStyleElement.prototype, HTMLStyleElementMixin.prototype);
     Property.mixin(Node.prototype, NodeMixin.prototype);
