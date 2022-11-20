@@ -4,7 +4,6 @@
   let numTestsRun = 0;
   let numTestsFailed = 0;
 
-
   function assertEq(expected, value, message) {
     numTestsRun++;
     if (expected !== value) {
@@ -164,6 +163,8 @@
     `;
     head.appendChild(style);
 
+    numTestsRun = 0;
+    numTestsFailed = 0;
     const tree = outputDoc.createElement("div");
     body.appendChild(tree);
     printNode(node, tree);

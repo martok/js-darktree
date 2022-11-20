@@ -295,7 +295,7 @@
       return this.children.length;
     }
     get children() {
-      return this.childNodes.filter(n => n instanceof Element);
+      return Array.prototype.filter.call(this.childNodes, n => n instanceof Element);
     }
     get firstElementChild() {
       let child = this.firstChild;
@@ -338,7 +338,7 @@
     }
     insertAdjacentHTML(where, data) {
       const df = document.createElement("template");
-      df.innerHTML = data;
+      Native.Element.innerHTML.set.call(df, data);
       this.insertAdjacentElement(where, df.content);
     }
     insertAdjacentText(where, text) {
@@ -373,8 +373,12 @@
       return sibling;
     }
     querySelector(selector) {
+      // TODO: implement
+      return Native.Element.querySelector.call(this, selector);
     }
     querySelectorAll(selector) {
+      // TODO: implement
+      return Native.Element.querySelectorAll.call(this, selector);
     }
     remove() {
       const parent = this.parentNode;
@@ -565,7 +569,7 @@
         }
         return child;
       }
-      return Native.Node.appendChild.call(this, child);
+      return Native.Node.insertBefore.call(this, child, reference);
     }
 
     removeChild(child) {
@@ -635,15 +639,11 @@
     }
 
     cloneNode(deep) {
-      if (!this.dtVirtualChildNodes) {
-        return Native.Node.cloneNode.call(this, deep);
-      }
       const result = Native.Node.cloneNode.call(this, false);
-      delete result.dtVirtualChildNodes;
-      delete result.dtVirtualParent;
+      // result may have gotten its shadowRoot initialized by the CE Polyfill, real shadow DOM would likely delay that
       if (deep) {
-        for(const node of this.dtVirtualChildNodes) {
-          Native.Node.appendChild.call(result, Native.Node.cloneNode.call(node, true));
+        for(const node of this.childNodes) {
+          result.insertBefore(node.cloneNode(true), null);
         }
       }
       return result;
@@ -698,6 +698,10 @@
     }
 
     // inherit from DocumentFragment: parentNode, nextSibling, previousSibling
+
+    cloneNode(deep) {
+      throw new DOMException("ShadowRoot nodes are not clonable.", "NotSupportedError");
+    }
 
     get dtUnique() {
       return this.host.getAttribute(ATTR_ID);
