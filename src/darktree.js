@@ -459,6 +459,10 @@
       return Native.Node.textContent.get.call(this);
     }
     set textContent(text) {
+      if (this.textContent == text) {
+        // computing the combined text is faster than a useless DOM update
+        return;
+      }
       if (this.dtVirtualChildNodes) {
         this.dtClearChildNodes();
         const tn = document.createTextNode(text);
@@ -513,6 +517,11 @@
         node = Native.Node.previousSibling.get.call(node);
       }
       return node;
+    }
+
+    get childNodes() {
+      const children = Native.Node.childNodes.get.call(this.host);
+      return Array.prototype.filter.call(children, n => !this.host.dtVirtualChildNodes.includes(n));
     }
 
     get dtUnique() {
