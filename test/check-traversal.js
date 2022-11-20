@@ -2,6 +2,12 @@
   "use strict";
 
 
+  function assertEq(expected, value, message) {
+    if (expected !== value) {
+      console.warn("Failed: ", message, "\nExpected:", expected, " got: ", value);
+    }
+  }
+
   function printNode(aNode, aTarget) {
     const doc = aTarget.ownerDocument;
 
@@ -48,18 +54,35 @@
     const childList = doc.createElement("ul");
 
     if (aNode.dtShadowRoot) {
+      assertEq(null, aNode.dtShadowRoot.parentNode, "ShadowRoot has no parent");
+
       const item = doc.createElement("li");
       childList.appendChild(item);
       printNode(aNode.dtShadowRoot, item);
     }
 
     let child = aNode.firstChild;
+    let childCount = 0;
+    if (child)
+      assertEq(null, child.previousSibling, "First Child has no previous sibling");
+
     while (child) {
+      assertEq(aNode, child.parentNode, "Child has self as parentNode");
+      assertEq(child, aNode.childNodes[childCount], "Child iteration and array have same content");
+
+      childCount++;
+
       const item = doc.createElement("li");
       childList.appendChild(item);
       printNode(child, item);
-      child = child.nextSibling;
+
+      const next = child.nextSibling;
+      if (next)
+        assertEq(child, next.previousSibling, "Next Child has current child as previousSibling");
+      child = next;
     }
+    const list = aNode.childNodes;
+    assertEq(childCount, list.length, "Child iteration and array length agree");
     if (childList.childElementCount>0) {
       aTarget.appendChild(childList);
     }
