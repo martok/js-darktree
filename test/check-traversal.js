@@ -1,9 +1,14 @@
 (function () {
   "use strict";
 
+  let numTestsRun = 0;
+  let numTestsFailed = 0;
+
 
   function assertEq(expected, value, message) {
+    numTestsRun++;
     if (expected !== value) {
+      numTestsFailed++;
       console.warn("Failed: ", message, "\nExpected:", expected, " got: ", value);
     }
   }
@@ -162,6 +167,8 @@
     const tree = outputDoc.createElement("div");
     body.appendChild(tree);
     printNode(node, tree);
+
+    console.log("Tests results: ", numTestsRun-numTestsFailed, "/", numTestsRun, "successes, ", numTestsFailed, "failed");
   }
 
   window.__DT_checkTraversal = checkTraversal;
