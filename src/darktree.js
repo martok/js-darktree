@@ -39,6 +39,7 @@
     Node: {
       appendChild: Node.prototype.appendChild,
       childNodes: propgetset(Node.prototype, "childNodes"),
+      cloneNode: Node.prototype.cloneNode,
       firstChild: propgetset(Node.prototype, "firstChild"),
       insertBefore: Node.prototype.insertBefore,
       lastChild: propgetset(Node.prototype, "lastChild"),
@@ -63,10 +64,6 @@
   let hostElementID = 1;
 
   const NodeQ = new class NodeQ_ {
-    isShadowRoot(nodeLike) {
-      return nodeLike instanceof ShadowRoot;
-    }
-
     getRoot(node) {
       // return the enclosing ShadowRoot or the Document if not in a shadow tree
       while (node.parentNode)
@@ -85,9 +82,40 @@
 
     getShadowIncludingRoot(node) {
       let root = getRoot(node);
-      while (isShadowRoot(root))
+      while (node instanceof ShadowRoot)
         root = getRoot(root.host);
       return root;
+    }
+
+    getNodeSibling(node, direction) {
+      const diff = direction>0 ? 1 : -1;
+      const method = direction>0 ? Native.Node.nextSibling.get : Native.Node.previousSibling.get;
+
+      let sibling = method.call(node);
+      const dtParent = node.parentNode; //  may be a Node oder ShadowRoot
+
+      if (dtParent) {
+        // node is attached somewhere, is that place virtual? (this includes a shadow's host as well)
+        if (dtParent.dtVirtualChildNodes) {
+          // this will locate a node even if it is not currently in the live tree (ie. unslotted element)
+          const idx = dtParent.dtVirtualChildNodes.findIndex(e => e === node);
+          if (idx < 0)
+            throw new DOMException("Node not found in VirtualParent children list", "HierarchyRequestError");
+          const nidx = idx + diff;
+          if (nidx >= 0 && nidx < dtParent.dtVirtualChildNodes.length)
+            return dtParent.dtVirtualChildNodes[nidx];
+          return null;
+        } else {
+          // not virtual
+          if (dtParent instanceof ShadowRoot) {
+            // inside the ShadowRoot, skip over nodes that belong to the host
+            while (sibling && dtParent.host.dtVirtualChildNodes.includes(sibling)) {
+              sibling = method.call(sibling);
+            }
+          }
+        }
+      }
+      return sibling;
     }
   }
 
@@ -190,7 +218,7 @@
       Property.assignReadOnly(this, "shadowRoot", init.mode === "closed" ? null : sr);
       Property.assignReadOnly(this, "dtShadowRoot", sr);
       // Enable Mixin DOM traversal code!
-      Property.assignReadOnly(this, "dtVirtualChildNodes", [... Native.Node.childNodes.get.call(this)]);
+      this.dtVirtualize();
       // give the ShadowRoot a new empty tree (rendering will reconstruct it from virtual)
       Native.Node.textContent.set.call(this, "")
       // force rendering once, which will at this point only detach unslotted bits from the tree
@@ -326,19 +354,25 @@
       }
     }
 
+    dtVirtualize() {
+      if (this.dtVirtualChildNodes)
+        throw new DOMException("Node is already virtual!", "InvalidStateError");
+      Property.assignReadOnly(this, "dtVirtualChildNodes", [... Native.Node.childNodes.get.call(this)]);
+      for (const node of this.dtVirtualChildNodes) {
+        Property.assignReadOnly(node, "dtVirtualParent", this);
+      }
+    }
+
     get parentNode() {
-      // i.e. slotted element -> parent is the host
+      // i.e. for slotted element -> parent is the host
       if (this.dtVirtualParent)
         return this.dtVirtualParent;
       const parent = Native.Node.parentNode.get.call(this);
-      if (!parent) {
-        return parent;
-      }
-      if (parent.dtVirtualChildNodes) {
+      if (parent && parent.dtVirtualChildNodes) {
         // parent has virtual children. is this one of them? -> "true" parent
         if (parent.dtVirtualChildNodes.includes(this))
           return parent;
-        // no. is the parent a shadow host?
+        // no. is the parent a shadow host? -> node is in dark tree, parent is ShadowRoot
         if (parent.dtShadowRoot)
           return parent.dtShadowRoot;
         // no. this node is virtually detached
@@ -357,7 +391,7 @@
         delete child.dtVirtualParent;
       if (this.dtVirtualChildNodes) {
         const idx = reference ?
-                      this.dtVirtualChildNodes.findIndex((e) => e === reference) :
+                      this.dtVirtualChildNodes.findIndex(e => e === reference) :
                       this.dtVirtualChildNodes.length;
         if (idx < 0)
           throw new DOMException("Node was not found", "NotFoundError");
@@ -388,6 +422,32 @@
       return Native.Node.removeChild.call(this, child);
     }
 
+    get firstChild() {
+      if (this.dtVirtualChildNodes) {
+        if (this.dtVirtualChildNodes.length)
+          return this.dtVirtualChildNodes[0];
+        return null;
+      }
+      return Native.Node.firstChild.get.call(this);
+    }
+
+    get lastChild() {
+      if (this.dtVirtualChildNodes) {
+        if (this.dtVirtualChildNodes.length)
+          return this.dtVirtualChildNodes.at(-1);
+        return null;
+      }
+      return Native.Node.firstChild.get.call(this);
+    }
+
+    get nextSibling() {
+      return NodeQ.getNodeSibling(this, 1);
+    }
+
+    get previousSibling() {
+      return NodeQ.getNodeSibling(this, -1);
+    }
+
     get textContent() {
       if (this.dtVirtualChildNodes) {
         const parts = [];
@@ -406,6 +466,21 @@
       } else {
         Native.Node.textContent.set.call(this, text);
       }
+    }
+
+    cloneNode(deep) {
+      if (!this.dtVirtualChildNodes) {
+        return Native.Node.cloneNode.call(this, deep);
+      }
+      const result = Native.Node.cloneNode.call(this, false);
+      delete result.dtVirtualChildNodes;
+      delete result.dtVirtualParent;
+      if (deep) {
+        for(const node of this.dtVirtualChildNodes) {
+          Native.Node.appendChild.call(result, Native.Node.cloneNode.call(node, true));
+        }
+      }
+      return result;
     }
   }
 
@@ -460,7 +535,7 @@
           if (node.nodeType === Node.ELEMENT_NODE && node.localName === "slot" && !HTMLSlotElement.prototype.isPrototypeOf(node)) {
             Object.setPrototypeOf(node, HTMLSlotElement.prototype);
             // if we *just* did that, nothing can have been previously slotted. so, the current content is the fallback content
-            Property.assignReadOnly(node, "dtVirtualChildNodes", [... Native.Node.childNodes.get.call(node)]);
+            node.dtVirtualize();
           }
           if (node instanceof HTMLSlotElement) {
             allSlots.push(node);
