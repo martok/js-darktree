@@ -41,6 +41,7 @@
       childNodes: propgetset(Node.prototype, "childNodes"),
       cloneNode: Node.prototype.cloneNode,
       firstChild: propgetset(Node.prototype, "firstChild"),
+      hasChildNodes: Node.prototype.hasChildNodes,
       insertBefore: Node.prototype.insertBefore,
       lastChild: propgetset(Node.prototype, "lastChild"),
       nextSibling: propgetset(Node.prototype, "nextSibling"),
@@ -81,9 +82,9 @@
     }
 
     getShadowIncludingRoot(node) {
-      let root = getRoot(node);
+      let root = this.getRoot(node);
       while (node instanceof ShadowRoot)
-        root = getRoot(root.host);
+        root = this.getRoot(root.host);
       return root;
     }
 
@@ -327,7 +328,7 @@
     // Polyfill
     getRootNode(opt) {
       let composed = typeof opt === "object" && !!(opt.composed);
-      return composed ? getShadowIncludingRoot(this) : getRoot(this);
+      return composed ? NodeQ.getShadowIncludingRoot(this) : NodeQ.getRoot(this);
     }
 
     get childNodes() {
@@ -335,6 +336,13 @@
         return [... this.dtVirtualChildNodes];
       }
       return Native.Node.childNodes.get.call(this);
+    }
+
+    hasChildNodes() {
+      if (this.dtVirtualChildNodes) {
+        return !!this.dtVirtualChildNodes.length;
+      }
+      return Native.Node.hasChildNodes.call(this);
     }
 
     dtClearChildNodes() {
@@ -363,23 +371,22 @@
       }
     }
 
-    get parentNode() {
-      // i.e. for slotted element -> parent is the host
-      if (this.dtVirtualParent)
-        return this.dtVirtualParent;
-      const parent = Native.Node.parentNode.get.call(this);
-      if (parent && parent.dtVirtualChildNodes) {
-        // parent has virtual children. is this one of them? -> "true" parent
-        if (parent.dtVirtualChildNodes.includes(this))
-          return parent;
-        // no. is the parent a shadow host? -> node is in dark tree, parent is ShadowRoot
-        if (parent.dtShadowRoot)
-          return parent.dtShadowRoot;
-        // no. this node is virtually detached
+    get firstChild() {
+      if (this.dtVirtualChildNodes) {
+        if (this.dtVirtualChildNodes.length)
+          return this.dtVirtualChildNodes[0];
         return null;
       }
-      // regular parent element
-      return parent;
+      return Native.Node.firstChild.get.call(this);
+    }
+
+    get lastChild() {
+      if (this.dtVirtualChildNodes) {
+        if (this.dtVirtualChildNodes.length)
+          return this.dtVirtualChildNodes.at(-1);
+        return null;
+      }
+      return Native.Node.firstChild.get.call(this);
     }
 
     appendChild(child) {
@@ -422,22 +429,23 @@
       return Native.Node.removeChild.call(this, child);
     }
 
-    get firstChild() {
-      if (this.dtVirtualChildNodes) {
-        if (this.dtVirtualChildNodes.length)
-          return this.dtVirtualChildNodes[0];
+    get parentNode() {
+      // i.e. for slotted element -> parent is the host
+      if (this.dtVirtualParent)
+        return this.dtVirtualParent;
+      const parent = Native.Node.parentNode.get.call(this);
+      if (parent && parent.dtVirtualChildNodes) {
+        // parent has virtual children. is this one of them? -> "true" parent
+        if (parent.dtVirtualChildNodes.includes(this))
+          return parent;
+        // no. is the parent a shadow host? -> node is in dark tree, parent is ShadowRoot
+        if (parent.dtShadowRoot)
+          return parent.dtShadowRoot;
+        // no. this node is virtually detached
         return null;
       }
-      return Native.Node.firstChild.get.call(this);
-    }
-
-    get lastChild() {
-      if (this.dtVirtualChildNodes) {
-        if (this.dtVirtualChildNodes.length)
-          return this.dtVirtualChildNodes.at(-1);
-        return null;
-      }
-      return Native.Node.firstChild.get.call(this);
+      // regular parent element
+      return parent;
     }
 
     get nextSibling() {
@@ -493,14 +501,13 @@
     // mode: str
     // delegatesFocus: bool
 
-    appendChild(child) {
-      return this.insertBefore(child, null);
+    get childNodes() {
+      const children = Native.Node.childNodes.get.call(this.host);
+      return Array.prototype.filter.call(children, n => !this.host.dtVirtualChildNodes.includes(n));
     }
 
-    insertBefore(child, reference) {
-      const ret = Native.Node.insertBefore.call(this.host, child, reference);
-      this.dtRenderSync();
-      return ret;
+    hasChildNodes() {
+      return !!this.childNodes.length;
     }
 
     get firstChild() {
@@ -519,10 +526,24 @@
       return node;
     }
 
-    get childNodes() {
-      const children = Native.Node.childNodes.get.call(this.host);
-      return Array.prototype.filter.call(children, n => !this.host.dtVirtualChildNodes.includes(n));
+    appendChild(child) {
+      return this.insertBefore(child, null);
     }
+
+    insertBefore(child, reference) {
+      const result = Native.Node.insertBefore.call(this.host, child, reference);
+      this.dtRenderSync();
+      return result;
+    }
+
+    removeChild(child) {
+      // remove from host, but check if it is ours first
+      if (this.host.dtVirtualChildNodes.includes(child))
+        throw new DOMException("Node was not found", "NotFoundError");
+      return Native.Node.removeChild.call(this.host, child);
+    }
+
+    // inherit from DocumentFragment: parentNode, nextSibling, previousSibling
 
     get dtUnique() {
       return this.host.getAttribute(ATTR_ID);
