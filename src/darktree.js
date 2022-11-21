@@ -405,10 +405,7 @@
     set name(val) {
       if (val !== name) {
         this.setAttribute("name", "val");
-        const sr = NodeQ.getShadowRoot(this);
-        if (sr) {
-          sr.dtNotifyNodeModified(sr);
-        }
+        ShadowRoot.dtRenderIfInShadow(this);
       }
     }
 
@@ -440,13 +437,10 @@
         return this.dtOriginalTextContent;
       return Native.Node.textContent.get.call(this);
     }
-
     set textContent(text) {
       delete this.dtOriginalTextContent;
       Native.Node.textContent.set.call(this, text);
-      const sr = NodeQ.getShadowRoot(this);
-      if (sr)
-        sr.dtRenderSync();
+      ShadowRoot.dtRenderIfInShadow(this);
     }
 
     dtUpdateGlobalized() {
@@ -573,18 +567,19 @@
     }
 
     removeChild(child) {
-      if (child)
-        delete child.dtVirtualParent;
       if (this.dtVirtualChildNodes && child) {
         const idx = this.dtVirtualChildNodes.findIndex((e) => e === child);
         if (idx < 0)
           throw new DOMException("Node was not found", "NotFoundError");
         this.dtVirtualChildNodes.splice(idx, 1);
+        delete child.dtVirtualParent;
         if (this.dtShadowRoot)
           this.dtShadowRoot.dtRenderSync();
         return child;
       }
-      return Native.Node.removeChild.call(this, child);
+      const result = Native.Node.removeChild.call(this, child);
+      ShadowRoot.dtRenderIfInShadow(this);
+      return result;
     }
 
     get parentNode() {
@@ -635,6 +630,7 @@
         this.appendChild(tn);
       } else {
         Native.Node.textContent.set.call(this, text);
+        ShadowRoot.dtRenderIfInShadow(this);
       }
     }
 
@@ -694,7 +690,9 @@
       // remove from host, but check if it is ours first
       if (this.host.dtVirtualChildNodes.includes(child))
         throw new DOMException("Node was not found", "NotFoundError");
-      return Native.Node.removeChild.call(this.host, child);
+      const result = Native.Node.removeChild.call(this.host, child);
+      this.dtRenderSync();
+      return result;
     }
 
     // inherit from DocumentFragment: parentNode, nextSibling, previousSibling
@@ -785,6 +783,12 @@
         }
         return false;
       }
+    }
+
+    static dtRenderIfInShadow(node) {
+      const sr = NodeQ.getShadowRoot(node);
+      if (sr)
+        sr.dtRenderSync();
     }
   }
 
