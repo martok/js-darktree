@@ -37,11 +37,13 @@
       childElementCount: propgetset(Element.prototype, "childElementCount"),
       children: propgetset(Element.prototype, "children"),
       firstElementChild: propgetset(Element.prototype, "firstElementChild"),
+      innerHTML: propgetset(Element.prototype, "innerHTML"),
       insertAdjacentElement: Element.prototype.insertAdjacentElement,
       insertAdjacentHTML: Element.prototype.insertAdjacentHTML,
       insertAdjacentText: Element.prototype.insertAdjacentText,
       lastElementChild: propgetset(Element.prototype, "lastElementChild"),
       nextElementSibling: propgetset(Element.prototype, "nextElementSibling"),
+      outerHTML: propgetset(Element.prototype, "outerHTML"),
       prepend: Element.prototype.prepend,
       previousElementSibling: propgetset(Element.prototype, "previousElementSibling"),
       querySelector: Element.prototype.querySelector,
@@ -146,6 +148,20 @@
       if (item instanceof Node)
         return item;
       return document.createTextNode("" + item);
+    }
+
+    tryNativeCloneNode(node, deep) {
+      // CE polyfill patches cloneNode so that elements are constructed immediately,
+      // real implementations delay that to DOM insertion.
+      // Need the un-upgraded clone, so use an implementation detail
+      // cf. https://github.com/webcomponents/polyfills/blob/master/packages/custom-elements/ts_src/Patch/Node.ts#L93
+      const oldCE = node.ownerDocument.__CE_registry;
+      try {
+        delete node.ownerDocument.__CE_registry;
+        return Native.Node.cloneNode.call(node, deep);
+      } finally {
+        node.ownerDocument.__CE_registry = oldCE;
+      }
     }
   }
 
@@ -303,6 +319,31 @@
         child = child.nextSibling;
       return child;
     }
+    get innerHTML() {
+      const parts = [];
+      for (const node of this.childNodes) {
+        switch (node.nodeType) {
+          case Node.ELEMENT_NODE:
+            parts.push(node.outerHTML);
+            break;
+          case Node.TEXT_NODE:
+            parts.push(node.textContent);
+            break;
+          case Node.COMMENT_NODE:
+            parts.push(`<!--${node.textContent}-->`);
+        }
+      }
+      return parts.join("");
+    }
+    set innerHTML(text) {
+      if (!this.dtVirtualChildNodes && !(this instanceof ShadowRoot)) {
+        const result = Native.Element.innerHTML.set.call(this, text);
+      }
+      for (const node of this.childNodes) {
+        this.removeChild(node);
+      }
+      this.insertAdjacentHTML("beforeend", text);
+    }
     insertAdjacentElement(where, element) {
       if (!(element instanceof Element) &&
           !(element instanceof DocumentFragment) &&
@@ -357,6 +398,27 @@
       while(sibling && !(sibling instanceof Element))
         sibling = sibling.nextSibling;
       return sibling;
+    }
+    get outerHTML() {
+      // can't use the cloneNode(false)-based method, as that would possibly spam attached shadows)
+      const clone = NodeQ.tryNativeCloneNode(this, false);
+      clone.removeAttribute(ATTR_ID);
+      clone.removeAttribute(ATTR_SLOT_STATUS);
+      const s = Native.Element.outerHTML.get.call(clone);
+      let split = s.lastIndexOf("></");
+      if (split < 0) split = s.length;
+      return s.substr(0, split+1) + this.innerHTML + s.substr(split+1);
+    }
+    set outerHTML(text) {
+      const parent = this.parentNode;
+      if (!parent)
+        throw new DOMException("Node has no parent", "NoModificationAllowedError");
+      const ref = this.nextSibling;
+      parent.removeChild(this);
+      if (ref)
+        ref.insertAdjacentHTML("beforebegin", text);
+      else
+        parent.insertAdjacentHTML("beforeend", text);
     }
     prepend(...nodes) {
       const ref = this.firstChild;
@@ -440,6 +502,20 @@
     set textContent(text) {
       delete this.dtOriginalTextContent;
       Native.Node.textContent.set.call(this, text);
+      ShadowRoot.dtRenderIfInShadow(this);
+    }
+
+    get innerHTML() {
+      if (this.dtOriginalTextContent) {
+        const temp = document.createElement('style');
+        Native.Element.innerHTML.set.call(temp, this.dtOriginalTextContent);
+        return Native.Element.innerHTML.get.call(temp);
+      }
+      return Native.Element.innerHTML.get.call(this);
+    }
+    set innerHTML(data) {
+      delete this.dtOriginalTextContent;
+      Native.Element.innerHTML.set.call(this, data);
       ShadowRoot.dtRenderIfInShadow(this);
     }
 
@@ -697,6 +773,26 @@
 
     // inherit from DocumentFragment: parentNode, nextSibling, previousSibling
 
+    get textContent() {
+      const parts = [];
+      for (const node of this.childNodes) {
+        parts.push(node.textContent);
+      }
+      return parts.join("");
+    }
+    set textContent(text) {
+      if (this.textContent == text) {
+        // computing the combined text is faster than a useless DOM update
+        return;
+      }
+      for (const node of this.childNodes) {
+        this.removeChild(node);
+      }
+      const tn = document.createTextNode(text);
+      this.appendChild(tn);
+      this.dtRenderSync();
+    }
+
     cloneNode(deep) {
       throw new DOMException("ShadowRoot nodes are not clonable.", "NotSupportedError");
     }
@@ -806,6 +902,7 @@
     Property.mixin(Element.prototype, ElementAccessMixin.prototype);
     Property.mixin(HTMLElement.prototype, HTMLElementAccesMixin);
     Property.mixin(ShadowRoot.prototype, ElementAccessMixin.prototype);
+    delete ShadowRoot.prototype.outerHTML;
     Property.mixin(Element.prototype, ElementMixin.prototype);
     Property.mixin(HTMLStyleElement.prototype, HTMLStyleElementMixin.prototype);
     Property.mixin(Node.prototype, NodeMixin.prototype);
