@@ -150,6 +150,14 @@
       return document.createTextNode("" + item);
     }
 
+    escapeAsInnerHTML(text) {
+      // use an element that doesn't create child nodes but also doesn't do anything expensive after parsing
+      const tmp = document.createElement("script");
+      tmp.setAttribute("type", "application/x-not-parsed");
+      Native.Node.textContent.set.call(tmp, text);
+      return Native.Element.innerHTML.get.call(tmp);
+    }
+
     tryNativeCloneNode(node, deep) {
       // CE polyfill patches cloneNode so that elements are constructed immediately,
       // real implementations delay that to DOM insertion.
@@ -327,7 +335,7 @@
             parts.push(node.outerHTML);
             break;
           case Node.TEXT_NODE:
-            parts.push(node.textContent);
+            parts.push(NodeQ.escapeAsInnerHTML(node.textContent));
             break;
           case Node.COMMENT_NODE:
             parts.push(`<!--${node.textContent}-->`);
@@ -495,7 +503,7 @@
 
   class HTMLStyleElementMixin {
     get textContent() {
-      if (this.dtOriginalTextContent)
+      if (typeof this.dtOriginalTextContent !== "undefined")
         return this.dtOriginalTextContent;
       return Native.Node.textContent.get.call(this);
     }
@@ -506,10 +514,8 @@
     }
 
     get innerHTML() {
-      if (this.dtOriginalTextContent) {
-        const temp = document.createElement('style');
-        Native.Element.innerHTML.set.call(temp, this.dtOriginalTextContent);
-        return Native.Element.innerHTML.get.call(temp);
+      if (typeof this.dtOriginalTextContent !== "undefined") {
+        return NodeQ.escapeAsInnerHTML(this.dtOriginalTextContent);
       }
       return Native.Element.innerHTML.get.call(this);
     }
@@ -520,15 +526,17 @@
     }
 
     dtUpdateGlobalized() {
-      const source = this.textContent;
+      if (typeof this.dtOriginalTextContent !== "undefined") {
+        // not changed since last call to dtUpdateGlobalized
+        return;
+      }
       const sr = NodeQ.getShadowRoot(this);
       if (!sr) {
         return;
       }
+      const source = this.textContent;
       // Save a copy of the original source before modifying
-      if (!this.dtOriginalTextContent) {
-        this.dtOriginalTextContent = source;
-      }
+      this.dtOriginalTextContent = source;
       const selfSelector = sr.dtHostSelector;
       // 1. translate :host(-content) pseudoselector first, because it would be a parser error
       const rules = Style.parseCSS(source.replace(
