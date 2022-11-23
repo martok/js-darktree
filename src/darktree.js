@@ -113,6 +113,18 @@
       return false;
     }
 
+    hasSameChildren(node, children) {
+      const current = Native.Node.childNodes.get.call(node);
+      if (children.length !== current.length)
+        return false;
+      for (let i = 0; i<children.length; i++) {
+        if (children[i] !== current[i]) {
+          return false;
+        }
+      }
+      return true;
+    }
+
     getNodeSibling(node, direction) {
       const diff = direction>0 ? 1 : -1;
       const method = direction>0 ? Native.Node.nextSibling.get : Native.Node.previousSibling.get;
@@ -275,8 +287,7 @@
       this.dtVirtualize();
       // give the ShadowRoot a new empty tree (rendering will reconstruct it from virtual)
       Native.Node.textContent.set.call(this, "")
-      // force rendering once, which will at this point only detach unslotted bits from the tree
-      sr.dtRenderSync();
+      // nothing is slotted and the SR is empty - nothing to render
       return sr;
     }
 
@@ -490,9 +501,9 @@
     }
 
     dtFillSlot(children) {
-      if (!children.length)
-        return;
       this.setAttribute(ATTR_SLOT_STATUS, "filled");
+      if (NodeQ.hasSameChildren(this, children))
+        return;
       // remove placeholder elements and add new children
       Native.Node.textContent.set.call(this, "");
       for (const child of children) {
@@ -640,7 +651,9 @@
           throw new DOMException("Node was not found", "NotFoundError");
         const insert = child instanceof DocumentFragment ? [... child.childNodes] : [child];
         Array.prototype.splice.apply(this.dtVirtualChildNodes, [idx, 0, ...insert]);
-        Property.assignReadOnly(child, "dtVirtualParent", this);
+        for (const cn of insert) {
+          Property.assignReadOnly(cn, "dtVirtualParent", this);
+        }
         if (this.dtShadowRoot) {
           // either slot it or set it aside
           this.dtShadowRoot.dtRenderSync();
@@ -667,19 +680,16 @@
     }
 
     get parentNode() {
-      // i.e. for slotted element -> parent is the host
       if (this.dtVirtualParent)
+        // fast case: explicit virtual parent
         return this.dtVirtualParent;
       const parent = Native.Node.parentNode.get.call(this);
       if (parent && parent.dtVirtualChildNodes) {
-        // parent has virtual children. is this one of them? -> "true" parent
-        if (parent.dtVirtualChildNodes.includes(this))
-          return parent;
-        // no. is the parent a shadow host? -> node is in dark tree, parent is ShadowRoot
+        // is the parent a shadow host and no virtual parent set? -> node is in dark tree, parent is ShadowRoot
         if (parent.dtShadowRoot)
           return parent.dtShadowRoot;
-        // no. this node is virtually detached
-        return null;
+        // invalid state, dtVirtualParent should be set if parent.dtVirtualChildNodes is
+        throw new DOMException("Virtual node hierarchy is in invalid state", "HierarchyRequestError");
       }
       // regular parent element
       return parent;
@@ -816,59 +826,53 @@
       return `${this.host.localName}[${ATTR_ID}="${this.dtUnique}"]`;
     }
 
-    dtEnsureSlotClasses() {
-      const allSlots = [];
-      const recurse = (parent) => {
-        let node = parent.firstChild;
-        while (node) {
-          // upgrade node if necessary
-          if (node.nodeType === Node.ELEMENT_NODE && node.localName === "slot" && !HTMLSlotElement.prototype.isPrototypeOf(node)) {
-            Object.setPrototypeOf(node, HTMLSlotElement.prototype);
-            // if we *just* did that, nothing can have been previously slotted. so, the current content is the fallback content
-            node.dtVirtualize();
-          }
-          if (node instanceof HTMLSlotElement) {
-            allSlots.push(node);
-          } else {
-            recurse(node);
-          }
-          node = node.nextSibling;
-        }
-      }
-      recurse(this);
-      return allSlots;
-    }
-
     dtRenderSync() {
       const selfHost = this.host;
       // prepare slots and slotted elements
-      const allSlots = this.dtEnsureSlotClasses();
       let nodesToSlot = [... selfHost.dtVirtualChildNodes];
-      // unslot everything
-      const pastAndPresentSlots = new Set(allSlots);
+      const slotInstructions = [];
+      // note currently used slots
+      const pastAndPresentSlots = new Set();
       for (const n of nodesToSlot) {
         const slot = n.assignedSlot;
         if (slot)
           pastAndPresentSlots.add(slot);
       }
+      // go through the dark tree and assemble what we have
+      recursiveRender(this);
+      // apply slotting instructions
+      for (const [slot, children] of slotInstructions) {
+        if (children) {
+          slot.dtFillSlot(children);
+        } else {
+          slot.dtUnslot();
+        }
+        pastAndPresentSlots.delete(slot);
+      }
+      // if an element was previously somewhere else, tell that slot it's empty now
       for (const slot of pastAndPresentSlots) {
         slot.dtUnslot();
       }
-      // go through the dark tree and assemble what we have
-      recursiveRender(this);
-      // any nodesToSlot that wasn't slotted remains detached
 
       function recursiveRender(parent) {
-        let node = parent.firstChild;
-        while (node) {
+        for (const node of parent.childNodes) {
+          maybeUpgradeSlot(node);
           if (node instanceof HTMLSlotElement) {
+            pastAndPresentSlots.add(node);
             slotFill(node);
           } else if (node instanceof HTMLStyleElement) {
             node.dtUpdateGlobalized();
           } else {
             recursiveRender(node);
           }
-          node = node.nextSibling;
+        }
+      }
+
+      function maybeUpgradeSlot(node) {
+        if (node.nodeType === Node.ELEMENT_NODE && node.localName === "slot" && !HTMLSlotElement.prototype.isPrototypeOf(node)) {
+          Object.setPrototypeOf(node, HTMLSlotElement.prototype);
+          // if we *just* did that, nothing can have been previously slotted. so, the current content is the fallback content
+          node.dtVirtualize();
         }
       }
 
@@ -876,16 +880,16 @@
         const slotName = slot.name;
         const fnTest = slotName ?
                          // named slots accept all elements that have the corresponding slot name
-                         (node) => node.nodeType == Node.ELEMENT_NODE && node.getAttribute("slot") === slotName :
+                         (node) => node.nodeType === Node.ELEMENT_NODE && node.getAttribute("slot") === slotName :
                          // An unnamed <slot> will be filled with all of the custom element's top-level child nodes that do not have the slot attribute. This includes text nodes.
                          (node) => node.nodeType !== Node.ELEMENT_NODE || !node.hasAttribute("slot");
         const matched = nodesToSlot.filter((node) => fnTest(node));
         if (!!matched.length) {
-          slot.dtFillSlot(matched);
+          slotInstructions.push([slot, matched]);
           nodesToSlot = nodesToSlot.filter((node) => !matched.includes(node));
-          return true;
+          return;
         }
-        return false;
+        slotInstructions.push([slot, null]);
       }
     }
 
