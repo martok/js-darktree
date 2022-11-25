@@ -601,7 +601,7 @@
           }
           delete node.dtVirtualParent;
         }
-        this.dtVirtualChildNodes.splice(0, this.dtVirtualChildNodes.length);
+        this.dtVirtualChildNodes.length = 0;
         if (this.dtShadowRoot)
           this.dtShadowRoot.dtRenderSync();
       } else {
@@ -641,8 +641,9 @@
     }
 
     insertBefore(child, reference) {
-      if (child)
-        delete child.dtVirtualParent;
+      if (child && child.parentNode) {
+        child.parentNode.removeChild(child);
+      }
       if (this.dtVirtualChildNodes) {
         const idx = reference ?
                       this.dtVirtualChildNodes.findIndex(e => e === reference) :
