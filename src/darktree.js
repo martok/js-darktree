@@ -113,7 +113,7 @@
       return false;
     }
 
-    hasSameChildren(node, children) {
+    hasSameNativeChildren(node, children) {
       const current = Native.Node.childNodes.get.call(node);
       if (children.length !== current.length)
         return false;
@@ -212,21 +212,7 @@
 
   const Style = new class Style_ {
     constructor() {
-      this.css = null;
       this.tempSheet = null;
-    }
-
-    ensureInstalled() {
-      if (this.css)
-        return;
-
-      this.css = document.createElement("style");
-      Native.Node.textContent.set.call(this.css,`
-        slot {
-          display: contents;
-        }
-      `);
-      Native.Node.appendChild.call(document.head, this.css);
     }
 
     parseCSS(source) {
@@ -273,8 +259,6 @@
         throw new DOMException(
             `The <${this.tagName}> element does not supported to attach shadow`,
             "NotSupportedError");
-      // ensure global CSS is installed
-      Style.ensureInstalled();
       // set up the virtual root
       let sr = new ShadowRoot();
       Property.assignReadOnly(sr, "host", this);
@@ -545,10 +529,10 @@
       if (!sr) {
         return;
       }
+      const selfSelector = sr.dtHostSelector;
       const source = this.textContent;
       // Save a copy of the original source before modifying
       this.dtOriginalTextContent = source;
-      const selfSelector = sr.dtHostSelector;
       // 1. translate :host(-content) pseudoselector first, because it would be a parser error
       const rules = Style.parseCSS(source.replace(
                                     // flag "s" is broken in SeaMonkey
