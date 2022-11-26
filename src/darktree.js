@@ -757,7 +757,8 @@
   const ShadowRenderService = new class ShadowRenderService_ {
     constructor() {
       this.updateStack = [];
-      this.logIndent = "";
+      this.logPerfEnabled = false;
+      this.logIndent = 0;
     }
 
     beginNodeUpdate(...nodes) {
@@ -823,7 +824,7 @@
       if (!updateRootSet.size) {
         return;
       }
-      this.logIndent += "  ";
+      this.logIndent++;
       const statStartTime = performance.now();
       let statCalcTime;
       let statStartRequests = updateRootSet.size;
@@ -839,11 +840,15 @@
         statCalcTime = performance.now();
         executeSlotting(slottingOrders);
       } finally {
-        const statEndTime = performance.now();
-        const calcMs = statCalcTime - statStartTime;
-        const assignMs = statEndTime - statCalcTime;
-        this.logIndent = this.logIndent.substr(0, this.logIndent.length - 2);
-        console.log(this.logIndent, `performShadowUpdates: ${calcMs}+${assignMs}ms, made ${statSlotAssignments} slot assignments (${statSlotUnchanged} unchanged), ${statSlotPreempted} preempted on ${statStartRequests}`, Math.random());
+        this.logIndent--;
+        if (this.logPerfEnabled) {
+          const statEndTime = performance.now();
+          const calcMs = statCalcTime - statStartTime;
+          const assignMs = statEndTime - statCalcTime;
+          console.log("  ".repeat(this.logIndent),
+                      `performShadowUpdates: ${calcMs}+${assignMs}ms, made ${statSlotAssignments} slot assignments (${statSlotUnchanged} unchanged), ${statSlotPreempted} preempted on ${statStartRequests}`,
+                      Math.random());
+        }
       }
 
       // implementation as hoisted functions that see the closure scope
