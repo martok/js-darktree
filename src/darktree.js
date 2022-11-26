@@ -470,29 +470,24 @@
     set name(val) {
       if (val !== name) {
         this.setAttribute("name", "val");
-        ShadowRoot.dtRenderIfInShadow(this);
+        ShadowRenderService.nodeUpdate(this);
       }
     }
 
-    dtUnslot() {
-      this.setAttribute(ATTR_SLOT_STATUS, "open");
-      // remove all slotted elements, and put back placeholder elements
-      // aka "realize" the dtVirtualChildNodes list
-      Native.Node.textContent.set.call(this, "");
-      for (const child of this.dtVirtualChildNodes) {
-        Native.Node.appendChild.call(this, child);
+    dtSlotAssign(children) {
+      if (!children) {
+        // put back placeholder elements
+        children = this.dtVirtualChildNodes;
       }
-    }
-
-    dtFillSlot(children) {
-      this.setAttribute(ATTR_SLOT_STATUS, "filled");
-      if (NodeQ.hasSameChildren(this, children))
-        return;
-      // remove placeholder elements and add new children
+      if (NodeQ.hasSameNativeChildren(this, children))
+        return false;
       Native.Node.textContent.set.call(this, "");
-      for (const child of children) {
-        Native.Node.appendChild.call(this, child);
-      }
+      Native.Element.append.apply(this, children);
+      // for some reason, setAttribute is *incredibly* slow on some sites (10ms+)
+      // TODO: the attribute is not used currently, so don't set it at all
+      // const a = "filled" : "open";
+      // queueMicrotask(() => this.setAttribute(ATTR_SLOT_STATUS, a));
+      return true;
     }
   }
 
@@ -504,8 +499,12 @@
     }
     set textContent(text) {
       delete this.dtOriginalTextContent;
-      Native.Node.textContent.set.call(this, text);
-      ShadowRoot.dtRenderIfInShadow(this);
+      ShadowRenderService.beginNodeUpdate(this);
+      try {
+        Native.Node.textContent.set.call(this, text);
+      } finally {
+        ShadowRenderService.endNodeUpdate();
+      }
     }
 
     get innerHTML() {
@@ -516,8 +515,12 @@
     }
     set innerHTML(data) {
       delete this.dtOriginalTextContent;
-      Native.Element.innerHTML.set.call(this, data);
-      ShadowRoot.dtRenderIfInShadow(this);
+      ShadowRenderService.beginNodeUpdate(this);
+      try {
+        Native.Element.innerHTML.set.call(this, data);
+      } finally {
+        ShadowRenderService.endNodeUpdate();
+      }
     }
 
     dtUpdateGlobalized() {
@@ -577,19 +580,22 @@
     }
 
     dtClearChildNodes() {
-      if (this.dtVirtualChildNodes) {
-        for (const node of this.dtVirtualChildNodes) {
-          const par = Native.Node.parentNode.get.call(node);
-          if (par) {
-            Native.Node.removeChild.call(par, node);
+      ShadowRenderService.beginNodeUpdate(this);
+      try {
+        if (this.dtVirtualChildNodes) {
+          for (const node of this.dtVirtualChildNodes) {
+            const par = Native.Node.parentNode.get.call(node);
+            if (par) {
+              Native.Node.removeChild.call(par, node);
+            }
+            delete node.dtVirtualParent;
           }
-          delete node.dtVirtualParent;
+          this.dtVirtualChildNodes.length = 0;
+        } else {
+          Native.Node.textContent.set.call(this, "");
         }
-        this.dtVirtualChildNodes.length = 0;
-        if (this.dtShadowRoot)
-          this.dtShadowRoot.dtRenderSync();
-      } else {
-        Native.Node.textContent.set.call(this, "");
+      } finally {
+        ShadowRenderService.endNodeUpdate();
       }
     }
 
@@ -628,40 +634,42 @@
       if (child && child.parentNode) {
         child.parentNode.removeChild(child);
       }
-      if (this.dtVirtualChildNodes) {
-        const idx = reference ?
-                      this.dtVirtualChildNodes.findIndex(e => e === reference) :
-                      this.dtVirtualChildNodes.length;
-        if (idx < 0)
-          throw new DOMException("Node was not found", "NotFoundError");
-        const insert = child instanceof DocumentFragment ? [... child.childNodes] : [child];
-        Array.prototype.splice.apply(this.dtVirtualChildNodes, [idx, 0, ...insert]);
-        for (const cn of insert) {
-          Property.assignReadOnly(cn, "dtVirtualParent", this);
+      ShadowRenderService.beginNodeUpdate(this, child);
+      try {
+        if (this.dtVirtualChildNodes) {
+          const idx = reference ?
+                        this.dtVirtualChildNodes.findIndex(e => e === reference) :
+                        this.dtVirtualChildNodes.length;
+          if (idx < 0)
+            throw new DOMException("Node was not found", "NotFoundError");
+          const insert = child instanceof DocumentFragment ? [... child.childNodes] : [child];
+          Array.prototype.splice.apply(this.dtVirtualChildNodes, [idx, 0, ...insert]);
+          for (const cn of insert) {
+            Property.assignReadOnly(cn, "dtVirtualParent", this);
+          }
+          return child;
         }
-        if (this.dtShadowRoot) {
-          // either slot it or set it aside
-          this.dtShadowRoot.dtRenderSync();
-        }
-        return child;
+        return Native.Node.insertBefore.call(this, child, reference);
+      } finally {
+        ShadowRenderService.endNodeUpdate();
       }
-      return Native.Node.insertBefore.call(this, child, reference);
     }
 
     removeChild(child) {
-      if (this.dtVirtualChildNodes && child) {
-        const idx = this.dtVirtualChildNodes.findIndex((e) => e === child);
-        if (idx < 0)
-          throw new DOMException("Node was not found", "NotFoundError");
-        this.dtVirtualChildNodes.splice(idx, 1);
-        delete child.dtVirtualParent;
-        if (this.dtShadowRoot)
-          this.dtShadowRoot.dtRenderSync();
-        return child;
+      ShadowRenderService.beginNodeUpdate(this, child);
+      try {
+        if (this.dtVirtualChildNodes && child) {
+          const idx = this.dtVirtualChildNodes.findIndex((e) => e === child);
+          if (idx < 0)
+            throw new DOMException("Node was not found", "NotFoundError");
+          this.dtVirtualChildNodes.splice(idx, 1);
+          delete child.dtVirtualParent;
+          return child;
+        }
+        return Native.Node.removeChild.call(this, child);
+      } finally {
+        ShadowRenderService.endNodeUpdate();
       }
-      const result = Native.Node.removeChild.call(this, child);
-      ShadowRoot.dtRenderIfInShadow(this);
-      return result;
     }
 
     get parentNode() {
@@ -703,13 +711,17 @@
         // computing the combined text is faster than a useless DOM update
         return;
       }
-      if (this.dtVirtualChildNodes) {
-        this.dtClearChildNodes();
-        const tn = document.createTextNode(text);
-        this.appendChild(tn);
-      } else {
-        Native.Node.textContent.set.call(this, text);
-        ShadowRoot.dtRenderIfInShadow(this);
+      ShadowRenderService.beginNodeUpdate(this);
+      try {
+        if (this.dtVirtualChildNodes) {
+          this.dtClearChildNodes();
+          const tn = document.createTextNode(text);
+          this.appendChild(tn);
+        } else {
+          Native.Node.textContent.set.call(this, text);
+        }
+      } finally {
+        ShadowRenderService.endNodeUpdate();
       }
     }
 
@@ -722,6 +734,196 @@
         }
       }
       return result;
+    }
+  }
+
+  /*
+  A ShadowRoot must be re-rendered if:
+    - attachShadow just happened
+    - a child node enters/leaves its shadow tree (could be/contain a slot)
+    - a child node enters/leaves its light tree (could be/contain slotted)
+    - a slot's name or an elements slot attribute was changed
+
+  Renders can be batched similar to CEReactions until "just before returning to user script".
+  This is done by wrapping all complex DOM-updating entrypoints in beginUpdate/endUpdate pairs.
+  To support reentrancy (mostly customElement constructors that cause updates to their own shadows), a stack
+  is maintained that avoids nested updates.
+  Update notifications that are not strict subsets of the current head are performed immediately.
+  beginUpdate that is not a strict subset of the current head creates a new stack level
+  beginUpdate that is a strict subset of the current head increments the nesting counter
+  endUpdate always refers to the current head
+  */
+
+  const ShadowRenderService = new class ShadowRenderService_ {
+    constructor() {
+      this.updateStack = [];
+      this.logIndent = "";
+    }
+
+    beginNodeUpdate(...nodes) {
+      const affectedRoots = this.getRelatedShadowRootSet(nodes);
+      if (this.isSubsetUpdate(affectedRoots)) {
+        this.updateStack[0][1] = this.updateStack[0][1] + 1;
+      } else {
+        this.updateStack.unshift([affectedRoots, 1, nodes]);
+      }
+    }
+
+    endNodeUpdate() {
+      if (!this.updateStack.length) {
+        throw new DOMException("ShadowRenderService nesting error", "NotSupportedError");
+      }
+      const newCount = this.updateStack[0][1] - 1;
+      if (newCount > 0) {
+        this.updateStack[0][1] = newCount;
+        return;
+      }
+      const head = this.updateStack.shift();
+      this.performShadowUpdates(head[0]);
+    }
+
+    nodeUpdate(nodeOrShadowRoot) {
+      const sr = new Set(this.getRelatedShadowRootSet([nodeOrShadowRoot]));
+      if (sr.size && !this.isSubsetUpdate(sr)) {
+        this.performShadowUpdates(sr);
+      }
+    }
+
+    isSubsetUpdate(rootset) {
+      if (!this.updateStack.length)
+        return false;
+      const headset = this.updateStack[0][0];
+      for (const root of rootset) {
+        if (!headset.has(root)) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    getRelatedShadowRootSet(nodesOrShadows) {
+      // a ShadowRoot is affected by a change on a node if it contains that node or is that node's shadow
+      const result = new Set();
+      for (const n of nodesOrShadows) {
+        if (n instanceof ShadowRoot) {
+          result.add(n);
+        } else if (n.dtShadowRoot) {
+          result.add(n.dtShadowRoot);
+        } else {
+          const sr = NodeQ.getShadowRoot(n);
+          if (sr) {
+            result.add(sr);
+          }
+        }
+      }
+      return result;
+    }
+
+    performShadowUpdates(updateRootSet) {
+      if (!updateRootSet.size) {
+        return;
+      }
+      this.logIndent += "  ";
+      const statStartTime = performance.now();
+      let statCalcTime;
+      let statStartRequests = updateRootSet.size;
+      let statSlotAssignments = 0;
+      let statSlotUnchanged = 0;
+      let statSlotPreempted = 0;
+      const slottingOrders = new Map();
+      try {
+        // compute
+        for (const root of updateRootSet) {
+          calculateSlottingFor(root, slottingOrders);
+        }
+        statCalcTime = performance.now();
+        executeSlotting(slottingOrders);
+      } finally {
+        const statEndTime = performance.now();
+        const calcMs = statCalcTime - statStartTime;
+        const assignMs = statEndTime - statCalcTime;
+        this.logIndent = this.logIndent.substr(0, this.logIndent.length - 2);
+        console.log(this.logIndent, `performShadowUpdates: ${calcMs}+${assignMs}ms, made ${statSlotAssignments} slot assignments (${statSlotUnchanged} unchanged), ${statSlotPreempted} preempted on ${statStartRequests}`, Math.random());
+      }
+
+      // implementation as hoisted functions that see the closure scope
+
+      function slotAssignment(slot, children) {
+        if (slottingOrders.has(slot)) {
+          // same slot has two changes. this can happen if a node was moved between ShadowRoots
+          statSlotPreempted++;
+          executeSlotting();
+        }
+        slottingOrders.set(slot, children);
+      }
+
+      function calculateSlottingFor(root) {
+        const selfHost = root.host;
+        let slottables = [... selfHost.dtVirtualChildNodes];
+        // note currently used slots
+        const previousAssignedSlots = new Set();
+        for (const n of slottables) {
+          const slot = n.assignedSlot;
+          if (slot)
+            previousAssignedSlots.add(slot);
+        }
+        recursiveRender(root);
+        // if a slot was not processed in this tree, it was moved outside. consider empty for now
+        for (const slot of previousAssignedSlots) {
+          slotAssignment(slot, null);
+        }
+
+        function recursiveRender(parent) {
+          for (const node of parent.childNodes) {
+            maybeUpgradeSlot(node);
+            if (node instanceof HTMLSlotElement) {
+              if (!slotFill(node)) {
+                slotAssignment(node, null);
+              }
+              // mark slot as processed
+              previousAssignedSlots.delete(node);
+            } else if (node instanceof HTMLStyleElement) {
+              node.dtUpdateGlobalized();
+            } else {
+              recursiveRender(node);
+            }
+          }
+        }
+
+        function maybeUpgradeSlot(node) {
+          if (node.nodeType === Node.ELEMENT_NODE && node.localName === "slot" && !HTMLSlotElement.prototype.isPrototypeOf(node)) {
+            Object.setPrototypeOf(node, HTMLSlotElement.prototype);
+            // if we *just* did that, nothing can have been previously slotted. so, the current content is the fallback content
+            node.dtVirtualize();
+          }
+        }
+
+        function slotFill(slot) {
+          const slotName = slot.name;
+          const fnTest = slotName ?
+                           // named slots accept all elements that have the corresponding slot name
+                           (node) => node.nodeType === Node.ELEMENT_NODE && node.getAttribute("slot") === slotName :
+                           // An unnamed <slot> will be filled with all of the custom element's top-level child nodes that do not have the slot attribute. This includes text nodes.
+                           (node) => node.nodeType !== Node.ELEMENT_NODE || !node.hasAttribute("slot");
+          const matched = slottables.filter((node) => fnTest(node));
+          if (matched.length > 0) {
+            slottables = slottables.filter((node) => !matched.includes(node));
+            slotAssignment(slot, matched);
+            return true;
+          }
+          return false;
+        }
+      }
+
+      function executeSlotting() {
+        for (const [slot, children] of slottingOrders) {
+          if (!slot.dtSlotAssign(children)) {
+            statSlotUnchanged++;
+          }
+          statSlotAssignments++;
+        }
+        slottingOrders.clear();
+      }
     }
   }
 
@@ -760,9 +962,12 @@
     }
 
     insertBefore(child, reference) {
-      const result = Native.Node.insertBefore.call(this.host, child, reference);
-      this.dtRenderSync();
-      return result;
+      ShadowRenderService.beginNodeUpdate(this);
+      try {
+        return Native.Node.insertBefore.call(this.host, child, reference);
+      } finally {
+        ShadowRenderService.endNodeUpdate();
+      }
     }
 
     removeChild(child) {
@@ -770,7 +975,7 @@
       if (this.host.dtVirtualChildNodes.includes(child))
         throw new DOMException("Node was not found", "NotFoundError");
       const result = Native.Node.removeChild.call(this.host, child);
-      this.dtRenderSync();
+      ShadowRenderService.nodeUpdate(this);
       return result;
     }
 
@@ -788,12 +993,16 @@
         // computing the combined text is faster than a useless DOM update
         return;
       }
-      for (const node of this.childNodes) {
-        this.removeChild(node);
+      ShadowRenderService.beginNodeUpdate(this);
+      try {
+        for (const node of this.childNodes) {
+          this.removeChild(node);
+        }
+        const tn = document.createTextNode(text);
+        this.appendChild(tn);
+      } finally {
+        ShadowRenderService.endNodeUpdate();
       }
-      const tn = document.createTextNode(text);
-      this.appendChild(tn);
-      this.dtRenderSync();
     }
 
     cloneNode(deep) {
@@ -809,79 +1018,6 @@
 
     get dtHostSelector() {
       return `${this.host.localName}[${ATTR_ID}="${this.dtUnique}"]`;
-    }
-
-    dtRenderSync() {
-      const selfHost = this.host;
-      // prepare slots and slotted elements
-      let nodesToSlot = [... selfHost.dtVirtualChildNodes];
-      const slotInstructions = [];
-      // note currently used slots
-      const pastAndPresentSlots = new Set();
-      for (const n of nodesToSlot) {
-        const slot = n.assignedSlot;
-        if (slot)
-          pastAndPresentSlots.add(slot);
-      }
-      // go through the dark tree and assemble what we have
-      recursiveRender(this);
-      // apply slotting instructions
-      for (const [slot, children] of slotInstructions) {
-        if (children) {
-          slot.dtFillSlot(children);
-        } else {
-          slot.dtUnslot();
-        }
-        pastAndPresentSlots.delete(slot);
-      }
-      // if an element was previously somewhere else, tell that slot it's empty now
-      for (const slot of pastAndPresentSlots) {
-        slot.dtUnslot();
-      }
-
-      function recursiveRender(parent) {
-        for (const node of parent.childNodes) {
-          maybeUpgradeSlot(node);
-          if (node instanceof HTMLSlotElement) {
-            pastAndPresentSlots.add(node);
-            slotFill(node);
-          } else if (node instanceof HTMLStyleElement) {
-            node.dtUpdateGlobalized();
-          } else {
-            recursiveRender(node);
-          }
-        }
-      }
-
-      function maybeUpgradeSlot(node) {
-        if (node.nodeType === Node.ELEMENT_NODE && node.localName === "slot" && !HTMLSlotElement.prototype.isPrototypeOf(node)) {
-          Object.setPrototypeOf(node, HTMLSlotElement.prototype);
-          // if we *just* did that, nothing can have been previously slotted. so, the current content is the fallback content
-          node.dtVirtualize();
-        }
-      }
-
-      function slotFill(slot) {
-        const slotName = slot.name;
-        const fnTest = slotName ?
-                         // named slots accept all elements that have the corresponding slot name
-                         (node) => node.nodeType === Node.ELEMENT_NODE && node.getAttribute("slot") === slotName :
-                         // An unnamed <slot> will be filled with all of the custom element's top-level child nodes that do not have the slot attribute. This includes text nodes.
-                         (node) => node.nodeType !== Node.ELEMENT_NODE || !node.hasAttribute("slot");
-        const matched = nodesToSlot.filter((node) => fnTest(node));
-        if (!!matched.length) {
-          slotInstructions.push([slot, matched]);
-          nodesToSlot = nodesToSlot.filter((node) => !matched.includes(node));
-          return;
-        }
-        slotInstructions.push([slot, null]);
-      }
-    }
-
-    static dtRenderIfInShadow(node) {
-      const sr = NodeQ.getShadowRoot(node);
-      if (sr)
-        sr.dtRenderSync();
     }
   }
 
