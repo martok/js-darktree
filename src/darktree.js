@@ -83,17 +83,17 @@
   const NodeQ = new class NodeQ_ {
     getRoot(node) {
       // return the enclosing ShadowRoot or the Document if not in a shadow tree
-      while (node.parentNode)
+      while (node.parentNode) {
         node = node.parentNode;
+      }
       return node;
     }
 
     getShadowRoot(node) {
       // return the enclosing ShadowRoot or null if not in a shadow tree
-      while (node.parentNode)
-        node = node.parentNode;
-      if (node instanceof ShadowRoot)
-        return node;
+      const root = this.getRoot(node);
+      if (root instanceof ShadowRoot)
+        return root;
       return null;
     }
 
@@ -567,7 +567,7 @@
 
     get childNodes() {
       if (this.dtVirtualChildNodes) {
-        return [... this.dtVirtualChildNodes];
+        return this.dtVirtualChildNodes.slice(0);
       }
       return Native.Node.childNodes.get.call(this);
     }
@@ -602,7 +602,7 @@
     dtVirtualize() {
       if (this.dtVirtualChildNodes)
         throw new DOMException("Node is already virtual!", "InvalidStateError");
-      Property.assignReadOnly(this, "dtVirtualChildNodes", [... Native.Node.childNodes.get.call(this)]);
+      Property.assignReadOnly(this, "dtVirtualChildNodes", Array.prototype.slice.call(Native.Node.childNodes.get.call(this), 0));
       for (const node of this.dtVirtualChildNodes) {
         Property.assignReadOnly(node, "dtVirtualParent", this);
       }
@@ -631,11 +631,11 @@
     }
 
     insertBefore(child, reference) {
-      if (child && child.parentNode) {
-        child.parentNode.removeChild(child);
-      }
       ShadowRenderService.beginNodeUpdate(this, child);
       try {
+        if (child && child.parentNode) {
+          child.parentNode.removeChild(child);
+        }
         if (this.dtVirtualChildNodes) {
           const idx = reference ?
                         this.dtVirtualChildNodes.findIndex(e => e === reference) :
@@ -643,7 +643,7 @@
           if (idx < 0)
             throw new DOMException("Node was not found", "NotFoundError");
           const insert = child instanceof DocumentFragment ? [... child.childNodes] : [child];
-          Array.prototype.splice.apply(this.dtVirtualChildNodes, [idx, 0, ...insert]);
+          Array.prototype.splice.apply(this.dtVirtualChildNodes, [idx, 0].concat(insert));
           for (const cn of insert) {
             Property.assignReadOnly(cn, "dtVirtualParent", this);
           }
@@ -677,15 +677,10 @@
         // fast case: explicit virtual parent
         return this.dtVirtualParent;
       const parent = Native.Node.parentNode.get.call(this);
-      if (parent && parent.dtVirtualChildNodes) {
-        // is the parent a shadow host and no virtual parent set? -> node is in dark tree, parent is ShadowRoot
-        if (parent.dtShadowRoot)
-          return parent.dtShadowRoot;
-        // invalid state, dtVirtualParent should be set if parent.dtVirtualChildNodes is
-        throw new DOMException("Virtual node hierarchy is in invalid state", "HierarchyRequestError");
-      }
-      // regular parent element
-      return parent;
+      // node is not virtual, either in dark tree (parent is ShadowRoot) or regular
+      if (parent)
+        return parent.dtShadowRoot || parent;
+      return null;
     }
 
     get nextSibling() {
@@ -764,9 +759,10 @@
     beginNodeUpdate(...nodes) {
       const affectedRoots = this.getRelatedShadowRootSet(nodes);
       if (this.isSubsetUpdate(affectedRoots)) {
-        this.updateStack[0][1] = this.updateStack[0][1] + 1;
+        const head = this.updateStack[this.updateStack.length-1];
+        head[1] = head[1] + 1;
       } else {
-        this.updateStack.unshift([affectedRoots, 1, nodes]);
+        this.updateStack.push([affectedRoots, 1, nodes]);
       }
     }
 
@@ -774,13 +770,14 @@
       if (!this.updateStack.length) {
         throw new DOMException("ShadowRenderService nesting error", "NotSupportedError");
       }
-      const newCount = this.updateStack[0][1] - 1;
+      const head = this.updateStack[this.updateStack.length-1];
+      const newCount = head[1] - 1;
       if (newCount > 0) {
-        this.updateStack[0][1] = newCount;
+        head[1] = newCount;
         return;
       }
-      const head = this.updateStack.shift();
       this.performShadowUpdates(head[0]);
+      this.updateStack.pop();
     }
 
     nodeUpdate(nodeOrShadowRoot) {
@@ -792,8 +789,16 @@
 
     isSubsetUpdate(rootset) {
       if (!this.updateStack.length)
+        // no Shadow is currently updating
         return false;
-      const headset = this.updateStack[0][0];
+      if (!rootset.size)
+        // new does not affect any Shadow
+        return true;
+      const head = this.updateStack[this.updateStack.length-1];
+      const headset = head[0];
+      if (!headset.size)
+        // only empty set can be subset of empty -> previous
+        return false;
       for (const root of rootset) {
         if (!headset.has(root)) {
           return false;
@@ -864,7 +869,7 @@
 
       function calculateSlottingFor(root) {
         const selfHost = root.host;
-        let slottables = [... selfHost.dtVirtualChildNodes];
+        let slottables = selfHost.dtVirtualChildNodes.slice(0);
         // note currently used slots
         const previousAssignedSlots = new Set();
         for (const n of slottables) {
