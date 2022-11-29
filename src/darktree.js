@@ -259,6 +259,7 @@
         throw new DOMException(
             `The <${this.tagName}> element does not supported to attach shadow`,
             "NotSupportedError");
+      ensureMixinsInstalled();
       // set up the virtual root
       let sr = new ShadowRoot();
       Property.assignReadOnly(sr, "host", this);
@@ -1040,15 +1041,22 @@
     window.HTMLSlotElement = HTMLSlotElement;
   }
 
-  function installPatches() {
-    Property.mixin(customElements, CERegistryMixin.prototype);
+  let mixinsInstalled = false;
+  function ensureMixinsInstalled() {
+    if (mixinsInstalled)
+      return;
+    mixinsInstalled = true;
     Property.mixin(Element.prototype, ElementAccessMixin.prototype);
     Property.mixin(HTMLElement.prototype, HTMLElementAccesMixin);
     Property.mixin(ShadowRoot.prototype, ElementAccessMixin.prototype);
     delete ShadowRoot.prototype.outerHTML;
-    Property.mixin(Element.prototype, ElementMixin.prototype);
     Property.mixin(HTMLStyleElement.prototype, HTMLStyleElementMixin.prototype);
     Property.mixin(Node.prototype, NodeMixin.prototype);
+  }
+
+  function installPatches() {
+    Property.mixin(customElements, CERegistryMixin.prototype);
+    Property.mixin(Element.prototype, ElementMixin.prototype);
   }
 
   installExports();
