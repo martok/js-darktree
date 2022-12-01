@@ -1,3 +1,10 @@
+/*
+ DarkTree ShadowDOM Polyfill
+ Copyright (c) 2022 Martok. All rights reserved.
+ 
+ Released under the MIT license.
+*/
+
 (function () {
   "use strict";
 
