@@ -5,7 +5,7 @@
  Released under the MIT license.
 */
 
-(function () {
+void function () {
   "use strict";
 
   // do install checks first
@@ -1068,4 +1068,4 @@
 
   installExports();
   installPatches();
-}())
+}();
