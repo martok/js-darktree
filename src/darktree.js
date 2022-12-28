@@ -37,6 +37,10 @@ void function () {
     customElements: {
       define: customElements.define.bind(customElements),
     },
+    DocumentFragment: {
+      querySelector: DocumentFragment.prototype.querySelector,
+      querySelectorAll: DocumentFragment.prototype.querySelectorAll,
+    },
     Element: {
       after: Element.prototype.after,
       append: Element.prototype.append,
@@ -447,10 +451,14 @@ void function () {
     }
     querySelector(selector) {
       // TODO: implement
+      if (this instanceof DocumentFragment)
+        return Native.DocumentFragment.querySelector.call(this, selector);
       return Native.Element.querySelector.call(this, selector);
     }
     querySelectorAll(selector) {
       // TODO: implement
+      if (this instanceof DocumentFragment)
+        return Native.DocumentFragment.querySelectorAll.call(this, selector);
       return Native.Element.querySelectorAll.call(this, selector);
     }
     remove() {
